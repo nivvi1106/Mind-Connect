@@ -5,7 +5,11 @@ import {
     onAuthStateChanged, 
     createUserWithEmailAndPassword, 
     signInWithEmailAndPassword, 
-    signOut 
+    signOut,
+    sendPasswordResetEmail,
+    updatePassword,
+    EmailAuthProvider,
+    reauthenticateWithCredential
 } from 'firebase/auth';
 import { 
     getFirestore, 
@@ -20,9 +24,11 @@ import {
     getDoc,
     writeBatch,
     getDocs,
-    deleteDoc
+    deleteDoc,
+    runTransaction,
+    updateDoc
 } from 'firebase/firestore';
-import { Smile, Frown, Meh, Wind, Brain, Moon, Sun, User, LogOut, BookOpen, X, ChevronLeft, ChevronRight, CheckCircle, MessageSquare, Send, Trash2, PlusSquare, AlertTriangle } from 'lucide-react';
+import { Smile, Frown, Meh, Wind, Brain, Moon, Sun, User, LogOut, BookOpen, X, ChevronLeft, ChevronRight, CheckCircle, MessageSquare, Send, Trash2, PlusSquare, AlertTriangle, KeyRound, FileEdit } from 'lucide-react';
 
 /*
 * FONT INTEGRATION NOTE:
@@ -31,8 +37,6 @@ import { Smile, Frown, Meh, Wind, Brain, Moon, Sun, User, LogOut, BookOpen, X, C
 */
 
 // --- Firebase Configuration ---
-// IMPORTANT: Replace these placeholder values with your own Firebase project configuration keys.
-// For Firebase JS SDK v7.20.0 and later, measurementId is optional
 const firebaseConfig = {
   apiKey: import.meta.env.VITE_FIREBASE_API_KEY,
   authDomain: import.meta.env.VITE_FIREBASE_AUTH_DOMAIN,
@@ -56,28 +60,36 @@ const AuthProvider = ({ children }) => {
     const [loading, setLoading] = useState(true);
 
     useEffect(() => {
-        const unsubscribe = onAuthStateChanged(auth, async (firebaseUser) => {
+        const unsubscribe = onAuthStateChanged(auth, (firebaseUser) => {
             if (firebaseUser) {
                 const userDocRef = doc(db, `artifacts/${appId}/users`, firebaseUser.uid);
-                const docSnap = await getDoc(userDocRef);
-                if (docSnap.exists()) {
-                    setUser({ ...firebaseUser, ...docSnap.data() });
-                } else {
-                    setUser(firebaseUser);
-                }
+                
+                const unsubDoc = onSnapshot(userDocRef, (docSnap) => {
+                    if (docSnap.exists()) {
+                        setUser({ ...firebaseUser, ...docSnap.data() });
+                    } else {
+                        setUser(firebaseUser); 
+                    }
+                    setLoading(false);
+                }, (error) => {
+                    console.error("Error listening to user document:", error);
+                    setLoading(false);
+                });
+
+                return () => unsubDoc();
             } else {
                 setUser(null);
+                setLoading(false);
             }
-            setLoading(false);
         });
         return () => unsubscribe();
     }, []);
 
-    const value = { user };
+    const value = { user, loading };
 
     return (
         <AuthContext.Provider value={value}>
-            {!loading && children}
+            {children}
         </AuthContext.Provider>
     );
 };
@@ -117,47 +129,55 @@ export default function App() {
 }
 
 function MainApp() {
-    const { user } = useContext(AuthContext);
-    const [page, setPage] = useState('login'); // Start at login page
+    const { user, loading } = useContext(AuthContext);
+    const [page, setPage] = useState('login'); 
 
     useEffect(() => {
-        if (user) {
-            setPage('home');
-        } else {
-            // Only force back to login if not already on signup
-            if (page !== 'signup') {
-                setPage('login');
-            }
+        if (!loading && !user) {
+            setPage('login');
         }
-    }, [user]);
+    }, [user, loading]);
 
     const renderPage = () => {
-        if (!user) {
-            if (page === 'signup') {
-                return <SignUpPage setPage={setPage} />;
-            }
-            return <LoginPage setPage={setPage} />;
+        if (loading) {
+            return (
+                <div className="flex items-center justify-center min-h-screen">
+                    <p className="text-lg font-semibold">Loading App...</p>
+                </div>
+            );
         }
 
-        return (
-            <div className="flex flex-col min-h-screen font-nunito">
-                <Navbar setPage={setPage} />
-                <main className="flex-grow w-full container mx-auto px-4 sm:px-6 lg:px-8 max-w-7xl">
-                    {
+        if (user && user.email) {
+            return (
+                <div className="flex flex-col min-h-screen font-nunito">
+                    <Navbar setPage={setPage} />
+                    <main className="flex-grow w-full container mx-auto px-4 sm:px-6 lg:px-8 max-w-7xl flex flex-col">
                         {
-                            'home': <HomePage setPage={setPage} />,
-                            'breathe-ease': <BreatheAndEasePage setPage={setPage} />,
-                            'mood-check': <MoodCheckPage setPage={setPage} />,
-                            'heart-journal': <HeartJournalPage setPage={setPage} />,
-                            'chatbot': <ChatbotPage setPage={setPage} />,
-                            'profile': <ProfilePage setPage={setPage} />,
-                            'crisis': <CrisisSupportPage setPage={setPage} />,
-                        }[page] || <HomePage setPage={setPage} />
-                    }
-                </main>
-                <Footer setPage={setPage} />
-            </div>
-        );
+                            {
+                                'home': <HomePage setPage={setPage} />,
+                                'breathe-ease': <BreatheAndEasePage setPage={setPage} />,
+                                'mood-check': <MoodCheckPage setPage={setPage} />,
+                                'heart-journal': <HeartJournalPage setPage={setPage} />,
+                                'chatbot': <ChatbotPage setPage={setPage} />,
+                                'profile': <ProfilePage setPage={setPage} />,
+                                'crisis': <CrisisSupportPage setPage={setPage} />,
+                            }[page] || <HomePage setPage={setPage} />
+                        }
+                    </main>
+                    <Footer setPage={setPage} />
+                </div>
+            );
+        }
+        
+        switch (page) {
+            case 'signup':
+                return <SignUpPage setPage={setPage} />;
+            case 'forgot-password':
+                return <ForgotPasswordPage setPage={setPage} />;
+            case 'login':
+            default:
+                return <LoginPage setPage={setPage} />;
+        }
     };
 
     return (
@@ -169,42 +189,94 @@ function MainApp() {
 
 // --- Authentication Pages ---
 const AuthForm = ({ isLogin, setPage }) => {
+    const [username, setUsername] = useState('');
     const [name, setName] = useState('');
     const [age, setAge] = useState('');
+    const [dob, setDob] = useState('');
+    const [country, setCountry] = useState('');
+    const [city, setCity] = useState('');
     const [email, setEmail] = useState('');
+    const [loginInput, setLoginInput] = useState('');
     const [password, setPassword] = useState('');
     const [confirmPassword, setConfirmPassword] = useState('');
     const [error, setError] = useState('');
     const [loading, setLoading] = useState(false);
 
+    const handleLogin = async () => {
+        let userEmail = loginInput;
+        if (!loginInput.includes('@')) {
+            const usernameDocRef = doc(db, `artifacts/${appId}/usernames`, loginInput.toLowerCase());
+            try {
+                const usernameDoc = await getDoc(usernameDocRef);
+                if (usernameDoc.exists()) {
+                    const { uid } = usernameDoc.data();
+                    const userDocRef = doc(db, `artifacts/${appId}/users`, uid);
+                    const userDoc = await getDoc(userDocRef);
+                    if (userDoc.exists()) {
+                        userEmail = userDoc.data().email;
+                    } else {
+                        throw new Error("User not found for this username.");
+                    }
+                } else {
+                    throw new Error("Username does not exist.");
+                }
+            } catch (err) {
+                setError(err.message);
+                setLoading(false);
+                return;
+            }
+        }
+        try {
+            await signInWithEmailAndPassword(auth, userEmail, password);
+        } catch (err) {
+            if (err.code === 'auth/wrong-password' || err.code === 'auth/user-not-found' || err.code === 'auth/invalid-credential') {
+                setError('Incorrect username or password.');
+            } else {
+                setError(err.message.replace('Firebase: ', ''));
+            }
+        }
+    };
+
+    const handleSignup = async () => {
+        if (password !== confirmPassword) {
+            setError("Passwords do not match.");
+            return;
+        }
+        if (!/^[a-zA-Z0-9_]{3,15}$/.test(username)) {
+            setError("Username must be 3-15 characters (letters, numbers, underscore).");
+            return;
+        }
+
+        try {
+            await runTransaction(db, async (transaction) => {
+                const usernameDocRef = doc(db, `artifacts/${appId}/usernames`, username.toLowerCase());
+                const usernameDoc = await transaction.get(usernameDocRef);
+
+                if (usernameDoc.exists()) {
+                    throw new Error("Username is already taken.");
+                }
+
+                const userCredential = await createUserWithEmailAndPassword(auth, email, password);
+                const user = userCredential.user;
+                
+                const userDocRef = doc(db, `artifacts/${appId}/users`, user.uid);
+                
+                transaction.set(userDocRef, { username, name, age, dob, country, city, email });
+                transaction.set(usernameDocRef, { uid: user.uid });
+            });
+        } catch (err) {
+            setError(err.message.replace('Firebase: ', ''));
+        }
+    };
+
     const handleSubmit = async (e) => {
         e.preventDefault();
         setError('');
         setLoading(true);
-
         if (isLogin) {
-            try {
-                await signInWithEmailAndPassword(auth, email, password);
-            } catch (err) {
-                setError(err.message);
-            }
+            await handleLogin();
         } else {
-            if (password !== confirmPassword) {
-                setError("Passwords do not match.");
-                setLoading(false);
-                return;
-            }
-            try {
-                const userCredential = await createUserWithEmailAndPassword(auth, email, password);
-                const user = userCredential.user;
-                await setDoc(doc(db, `artifacts/${appId}/users`, user.uid), {
-                    name,
-                    age,
-                    email,
-                });
-            } catch (err) {
-                setError(err.message);
-            }
+            await handleSignup();
         }
         setLoading(false);
     };
@@ -212,7 +284,7 @@ const AuthForm = ({ isLogin, setPage }) => {
     return (
         <div className="flex items-center justify-center min-h-screen bg-slate-100 dark:bg-gray-800 font-nunito p-4">
             <div className="w-full max-w-md p-8 space-y-6 bg-white dark:bg-gray-900 rounded-2xl shadow-lg">
-                <div className="flex-shrink-0 flex flex-col leading-tight text-center mb-4">
+                <div className="text-center mb-4">
                     <div className="flex items-center justify-center gap-2">
                         <h1 className="text-3xl font-bold text-teal-600 dark:text-teal-400 font-lora">Mind</h1>
                         <Brain size={28} className="text-teal-500" />
@@ -225,39 +297,81 @@ const AuthForm = ({ isLogin, setPage }) => {
                 <form onSubmit={handleSubmit} className="space-y-4">
                     {!isLogin && (
                         <>
-                            <div>
-                                <label className="text-sm font-bold text-gray-600 dark:text-gray-400 block">Name</label>
-                                <input type="text" value={name} onChange={e => setName(e.target.value)} className="w-full p-3 mt-1 text-gray-800 bg-gray-100 dark:bg-gray-700 dark:text-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-teal-500" required />
-                            </div>
-                             <div>
-                                <label className="text-sm font-bold text-gray-600 dark:text-gray-400 block">Age</label>
-                                <input type="number" value={age} onChange={e => setAge(e.target.value)} className="w-full p-3 mt-1 text-gray-800 bg-gray-100 dark:bg-gray-700 dark:text-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-teal-500" required />
-                            </div>
+                            <input type="text" placeholder="Username" value={username} onChange={e => setUsername(e.target.value)} className="w-full p-3 bg-gray-100 dark:bg-gray-700 rounded-lg focus:outline-none focus:ring-2 focus:ring-teal-500" required />
+                            <input type="text" placeholder="Name" value={name} onChange={e => setName(e.target.value)} className="w-full p-3 bg-gray-100 dark:bg-gray-700 rounded-lg focus:outline-none focus:ring-2 focus:ring-teal-500" required />
+                            <input type="number" placeholder="Age" value={age} onChange={e => setAge(e.target.value)} className="w-full p-3 bg-gray-100 dark:bg-gray-700 rounded-lg focus:outline-none focus:ring-2 focus:ring-teal-500" required />
+                            <input type="date" placeholder="Date of Birth" value={dob} onChange={e => setDob(e.target.value)} className="w-full p-3 bg-gray-100 dark:bg-gray-700 rounded-lg focus:outline-none focus:ring-2 focus:ring-teal-500" required />
+                            <input type="text" placeholder="Country" value={country} onChange={e => setCountry(e.target.value)} className="w-full p-3 bg-gray-100 dark:bg-gray-700 rounded-lg focus:outline-none focus:ring-2 focus:ring-teal-500" required />
+                            <input type="text" placeholder="City" value={city} onChange={e => setCity(e.target.value)} className="w-full p-3 bg-gray-100 dark:bg-gray-700 rounded-lg focus:outline-none focus:ring-2 focus:ring-teal-500" required />
+                            <input type="email" placeholder="Email" value={email} onChange={e => setEmail(e.target.value)} className="w-full p-3 bg-gray-100 dark:bg-gray-700 rounded-lg focus:outline-none focus:ring-2 focus:ring-teal-500" required />
                         </>
                     )}
-                    <div>
-                        <label className="text-sm font-bold text-gray-600 dark:text-gray-400 block">Email</label>
-                        <input type="email" value={email} onChange={e => setEmail(e.target.value)} className="w-full p-3 mt-1 text-gray-800 bg-gray-100 dark:bg-gray-700 dark:text-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-teal-500" required />
-                    </div>
-                    <div>
-                        <label className="text-sm font-bold text-gray-600 dark:text-gray-400 block">Password</label>
-                        <input type="password" value={password} onChange={e => setPassword(e.target.value)} className="w-full p-3 mt-1 text-gray-800 bg-gray-100 dark:bg-gray-700 dark:text-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-teal-500" required />
-                    </div>
-                     {!isLogin && (
-                        <div>
-                            <label className="text-sm font-bold text-gray-600 dark:text-gray-400 block">Confirm Password</label>
-                            <input type="password" value={confirmPassword} onChange={e => setConfirmPassword(e.target.value)} className="w-full p-3 mt-1 text-gray-800 bg-gray-100 dark:bg-gray-700 dark:text-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-teal-500" required />
-                        </div>
+                    {isLogin && (
+                        <input type="text" placeholder="Email or Username" value={loginInput} onChange={e => setLoginInput(e.target.value)} className="w-full p-3 bg-gray-100 dark:bg-gray-700 rounded-lg focus:outline-none focus:ring-2 focus:ring-teal-500" required />
                     )}
-                    {error && <p className="text-red-500 text-sm text-center">{error.replace('Firebase: ', '')}</p>}
+                    <input type="password" placeholder="Password" value={password} onChange={e => setPassword(e.target.value)} className="w-full p-3 bg-gray-100 dark:bg-gray-700 rounded-lg focus:outline-none focus:ring-2 focus:ring-teal-500" required />
+                    {!isLogin && (
+                        <input type="password" placeholder="Confirm Password" value={confirmPassword} onChange={e => setConfirmPassword(e.target.value)} className="w-full p-3 bg-gray-100 dark:bg-gray-700 rounded-lg focus:outline-none focus:ring-2 focus:ring-teal-500" required />
+                    )}
+                    {error && <p className="text-red-500 text-sm text-center">{error}</p>}
                     <button type="submit" disabled={loading} className="w-full py-3 mt-4 font-bold text-white bg-teal-600 rounded-lg hover:bg-teal-700 transition-colors disabled:bg-teal-400">
                         {loading ? 'Processing...' : (isLogin ? 'Login' : 'Sign Up')}
                     </button>
                 </form>
+                <div className="text-center text-sm">
+                    {isLogin && (
+                        <button onClick={() => setPage('forgot-password')} className="font-bold text-teal-600 dark:text-teal-400 hover:underline">
+                            Forgot Password?
+                        </button>
+                    )}
+                </div>
                 <p className="text-center text-sm text-gray-600 dark:text-gray-400">
                     {isLogin ? "Don't have an account? " : "Already have an account? "}
                     <button onClick={() => setPage(isLogin ? 'signup' : 'login')} className="font-bold text-teal-600 dark:text-teal-400 hover:underline">
                         {isLogin ? 'Sign Up' : 'Login'}
+                    </button>
+                </p>
+            </div>
+        </div>
+    );
+};
+
+const ForgotPasswordPage = ({ setPage }) => {
+    const [email, setEmail] = useState('');
+    const [message, setMessage] = useState('');
+    const [error, setError] = useState('');
+    const [loading, setLoading] = useState(false);
+
+    const handleSubmit = async (e) => {
+        e.preventDefault();
+        setError('');
+        setMessage('');
+        setLoading(true);
+        try {
+            await sendPasswordResetEmail(auth, email);
+            setMessage('Password reset email sent! Please check your inbox and spam folder.');
+        } catch (err) {
+            setError(err.message.replace('Firebase: ', ''));
+        }
+        setLoading(false);
+    };
+
+    return (
+        <div className="flex items-center justify-center min-h-screen bg-slate-100 dark:bg-gray-800 p-4">
+            <div className="w-full max-w-md p-8 space-y-6 bg-white dark:bg-gray-900 rounded-2xl shadow-lg">
+                <h2 className="text-2xl font-bold text-center text-gray-800 dark:text-gray-100 font-lora">Reset Password</h2>
+                <p className="text-center text-sm text-gray-600 dark:text-gray-400">Enter your email address and we'll send you a link to reset your password.</p>
+                <form onSubmit={handleSubmit} className="space-y-4">
+                    <input type="email" placeholder="Email Address" value={email} onChange={e => setEmail(e.target.value)} className="w-full p-3 bg-gray-100 dark:bg-gray-700 rounded-lg focus:outline-none focus:ring-2 focus:ring-teal-500" required />
+                    {message && <p className="text-green-500 text-sm text-center">{message}</p>}
+                    {error && <p className="text-red-500 text-sm text-center">{error}</p>}
+                    <button type="submit" disabled={loading} className="w-full py-3 mt-4 font-bold text-white bg-teal-600 rounded-lg hover:bg-teal-700 transition-colors disabled:bg-teal-400">
+                        {loading ? 'Sending...' : 'Send Reset Link'}
+                    </button>
+                </form>
+                <p className="text-center text-sm">
+                    <button onClick={() => setPage('login')} className="font-bold text-teal-600 dark:text-teal-400 hover:underline">
+                        Back to Login
                     </button>
                 </p>
             </div>
@@ -337,7 +451,7 @@ const Navbar = ({ setPage }) => {
 };
 
 const Footer = ({ setPage }) => (
-    <footer className="bg-gray-100 dark:bg-gray-800 mt-12">
+    <footer className="bg-gray-100 dark:bg-gray-800 mt-auto">
         <div className="container mx-auto py-8 px-4 max-w-7xl text-center text-gray-600 dark:text-gray-400">
             <p className="text-sm mb-4">
                 <span className="font-bold">Disclaimer:</span> Mind Connect is a support tool, not a replacement for professional medical advice. If you are in crisis, please seek immediate help.
@@ -488,7 +602,7 @@ const BreatheAndEasePage = ({ setPage }) => {
 
     if (activeTool) {
         return (
-            <div className="animate-fadeIn">
+            <div className="animate-fadeIn py-8">
                 <PageHeader title={tools[activeTool].title} onBack={() => setActiveTool(null)} />
                 {renderTool()}
             </div>
@@ -496,7 +610,7 @@ const BreatheAndEasePage = ({ setPage }) => {
     }
 
     return (
-        <div className="animate-fadeIn">
+        <div className="animate-fadeIn py-8">
             <PageHeader title="Breathe & Ease" onBack={() => setPage('home')} />
             <p className="text-gray-600 dark:text-gray-400 mb-6">Tools to help you find calm in moments of high anxiety or stress.</p>
             <div className="space-y-4 max-w-lg mx-auto">
@@ -624,7 +738,7 @@ const MoodCheckPage = ({ setPage }) => {
     }, [user]);
 
     return (
-        <div className="animate-fadeIn">
+        <div className="animate-fadeIn py-8">
             <PageHeader title="Mood Check" onBack={() => setPage('home')} />
             <div className="flex justify-center mb-6 border border-gray-200 dark:border-gray-700 rounded-lg p-1 space-x-1 bg-gray-100 dark:bg-gray-800 max-w-xs mx-auto">
                 <button onClick={() => setView('log')} className={`w-full py-2 rounded-md transition-colors text-sm font-medium ${view === 'log' ? 'bg-white dark:bg-gray-600 shadow' : 'hover:bg-gray-200 dark:hover:bg-gray-700'}`}>New Log</button>
@@ -652,10 +766,10 @@ const AnimatedEmoji = ({ value }) => {
 };
 
 const NewMoodLog = () => {
+    const { user } = useContext(AuthContext);
     const [moodValue, setMoodValue] = useState(50);
     const [answers, setAnswers] = useState({});
     const [isSaved, setIsSaved] = useState(false);
-    const { user } = useContext(AuthContext);
     const questions = [ "One good moment today?", "A word to describe your strength today?", "One hard moment today?", "A feeling you want to let go?", "What challenged you?", "Energy level right now?", "A small win today?", "One supportive person today?", "One intention for tomorrow?" ];
 
     const getMoodDescription = (value) => {
@@ -762,7 +876,7 @@ const HeartJournalPage = ({ setPage }) => {
     }, [user]);
 
     return (
-        <div className="animate-fadeIn">
+        <div className="animate-fadeIn py-8">
             <PageHeader title="Heart Journal" onBack={() => setPage('home')} />
             <div className="flex justify-center mb-6 border border-gray-200 dark:border-gray-700 rounded-lg p-1 space-x-1 bg-gray-100 dark:bg-gray-800 max-w-xs mx-auto">
                 <button onClick={() => setView('write')} className={`w-full py-2 rounded-md transition-colors text-sm font-medium ${view === 'write' ? 'bg-white dark:bg-gray-600 shadow' : 'hover:bg-gray-200 dark:hover:bg-gray-700'}`}>New Entry</button>
@@ -774,17 +888,17 @@ const HeartJournalPage = ({ setPage }) => {
 };
 
 const NewJournalEntry = () => {
+    const { user } = useContext(AuthContext);
     const [entry, setEntry] = useState('');
     const [isLoadingPrompt, setIsLoadingPrompt] = useState(false);
     const [isSaved, setIsSaved] = useState(false);
-    const { user } = useContext(AuthContext);
 
     const getAIPrompt = async () => {
         setIsLoadingPrompt(true);
         setEntry("Generating a prompt for you...");
         try {
             const payload = { contents: [{ role: 'user', parts: [{ text: "Give me a single, thoughtful journal prompt for self-reflection. Make it concise and open-ended." }] }] };
-            const apiKey = import.meta.env.VITE_GEMINI_API_KEY;
+            const apiKey = import.meta.env.VITE_GEMINI_API_KEY; // API Key is handled by the environment
             const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${apiKey}`;
             const response = await fetch(apiUrl, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
             const result = await response.json();
@@ -849,10 +963,7 @@ const JournalDetailModal = ({ entry, onClose }) => (
 );
 
 // --- AI Chatbot Page ---
-
-// This is the new Confirmation Modal component
 const ConfirmationModal = ({ message, onConfirm, onCancel }) => {
-    // This now controls its own visibility based on the 'message' prop
     if (!message) return null;
 
     return (
@@ -884,44 +995,30 @@ const ConfirmationModal = ({ message, onConfirm, onCancel }) => {
     );
 };
 
-// --- Main Chatbot Page Component ---
-
 const ChatbotPage = ({ setPage }) => {
-    // This should be your actual App ID from your environment
-    const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
-    
-    // --- FIX 1: Only get 'user' from context. 'db' is imported directly. ---
     const { user } = useContext(AuthContext);
-
-    // State for the main chat window
     const [messages, setMessages] = useState([]);
     const [input, setInput] = useState('');
     const [isLoading, setIsLoading] = useState(false);
-
-    // State for managing chat sessions
     const [chatSessions, setChatSessions] = useState([]);
     const [activeChatId, setActiveChatId] = useState(null);
-
-    // State for the modal now holds the chat ID or null
     const [chatToDelete, setChatToDelete] = useState(null);
-
     const messagesEndRef = useRef(null);
 
     const initialMessage = { id: 'initial', text: "Hello! I'm Echo. Think of me as a friendly ear, here to listen without judgment. What's on your mind today?", sender: 'ai' };
 
-    // --- EFFECTS ---
     useEffect(() => {
-        if (!user || !db) return;
+        if (!user) return;
         const chatsRef = collection(db, `artifacts/${appId}/users/${user.uid}/chats`);
         const q = query(chatsRef, orderBy('createdAt', 'desc'));
         const unsubscribe = onSnapshot(q, (snapshot) => {
             setChatSessions(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })));
         });
         return unsubscribe;
-    }, [user, db, appId]);
+    }, [user]);
 
     useEffect(() => {
-        if (!user || !db) return;
+        if (!user) return;
         if (activeChatId === null) {
             setMessages([initialMessage]);
             return;
@@ -932,14 +1029,11 @@ const ChatbotPage = ({ setPage }) => {
             setMessages(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })));
         });
         return unsubscribe;
-    }, [user, db, activeChatId, appId]);
+    }, [user, activeChatId]);
 
     useEffect(() => {
         messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
     }, [messages]);
-
-
-    // --- HANDLERS ---
 
     const handleSend = async () => {
         if (!input.trim() || isLoading || !user) return;
@@ -980,8 +1074,8 @@ const ChatbotPage = ({ setPage }) => {
 
         try {
             const prompt = `You are an empathetic and supportive AI friend named 'Echo' for a young person. Your primary language for conversation is English. Only switch to another language like Hinglish if the user explicitly asks you to or consistently messages you in that language. Be warm, non-judgmental, and use simple, encouraging language. AVOID giving any medical or clinical advice. Focus on being a supportive listener. User said: "${input}"`;
-            const apiKey = import.meta.env.VITE_GEMINI_API_KEY; // Your key should be handled securely
-            const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${apiKey}`;
+            const apiKey = import.meta.env.VITE_GEMINI_API_KEY; // API Key is handled by the environment
+            const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${apiKey}`;
             const payload = { contents: chatHistoryForAPI };
             const response = await fetch(apiUrl, {
                 method: 'POST',
@@ -1010,7 +1104,6 @@ const ChatbotPage = ({ setPage }) => {
         setInput('');
     };
 
-    // --- UPDATED DELETE LOGIC ---
     const confirmDelete = async () => {
         if (!user || !chatToDelete) return;
 
@@ -1031,10 +1124,9 @@ const ChatbotPage = ({ setPage }) => {
         } catch (error) {
             console.error("Error deleting chat:", error);
         } finally {
-            setChatToDelete(null); // Close the modal
+            setChatToDelete(null); 
         }
     };
-
 
     return (
         <div className="animate-fadeIn">
@@ -1045,8 +1137,7 @@ const ChatbotPage = ({ setPage }) => {
             />
 
             <PageHeader title="AI Friend" onBack={() => setPage('home')} />
-            <div className="flex h-[calc(100vh-150px)] w-full bg-white dark:bg-gray-900 rounded-2xl shadow-xl overflow-hidden">
-                {/* Sidebar */}
+            <div className="flex h-[calc(100vh-200px)] w-full bg-white dark:bg-gray-900 rounded-2xl shadow-xl overflow-hidden">
                 <div className="w-full md:w-1/3 lg:w-1/4 bg-gray-50 dark:bg-gray-800 border-r border-gray-200 dark:border-gray-700 flex flex-col">
                     <div className="p-2 border-b border-gray-200 dark:border-gray-700">
                         <button onClick={handleNewChat} className="w-full flex items-center justify-center gap-2 p-2 rounded-lg text-sm font-semibold text-gray-700 dark:text-gray-200 hover:bg-teal-100 dark:hover:bg-teal-900 transition-colors">
@@ -1061,7 +1152,7 @@ const ChatbotPage = ({ setPage }) => {
                                 <button
                                     onClick={(e) => {
                                         e.stopPropagation();
-                                        setChatToDelete(session.id); // Open modal
+                                        setChatToDelete(session.id);
                                     }}
                                     className="text-gray-400 hover:text-red-500 opacity-0 group-hover:opacity-100 transition-opacity"
                                     aria-label="Delete chat"
@@ -1073,7 +1164,6 @@ const ChatbotPage = ({ setPage }) => {
                     </div>
                 </div>
 
-                {/* --- FIX 2: Removed 'hidden' class to make chat window always visible --- */}
                 <div className="flex w-full md:w-2/3 lg:w-3/4 flex-col bg-white dark:bg-gray-800">
                     <div className="flex-grow p-4 overflow-y-auto">
                         <div className="space-y-4">
@@ -1122,13 +1212,13 @@ const ChatbotPage = ({ setPage }) => {
     );
 };
 
-
-
 // --- Other Pages (Profile, Crisis) ---
 const ProfilePage = ({ setPage }) => {
     const { user } = useContext(AuthContext);
     const [moodCount, setMoodCount] = useState(0);
     const [journalCount, setJournalCount] = useState(0);
+    const [showChangePassword, setShowChangePassword] = useState(false);
+    const [showEditProfile, setShowEditProfile] = useState(false);
 
     useEffect(() => {
         if(!user) return;
@@ -1139,27 +1229,182 @@ const ProfilePage = ({ setPage }) => {
             journalUnsub();
         }
     }, [user]);
+    
+    const ProfileDetail = ({ label, value }) => (
+        <div>
+            <p className="text-sm text-gray-500 dark:text-gray-400">{label}</p>
+            <p className="text-gray-800 dark:text-gray-200">{value || 'Not provided'}</p>
+        </div>
+    );
 
     return (
-        <div className="animate-fadeIn">
+        <div className="animate-fadeIn py-8">
             <PageHeader title="My Profile" onBack={() => setPage('home')} />
             <div className="bg-white dark:bg-gray-800 p-6 rounded-2xl shadow-sm space-y-6 max-w-md mx-auto">
-                <div><h3 className="font-bold text-lg font-lora">Account</h3><p className="text-gray-600 dark:text-gray-400">{user.email}</p></div>
                 <div>
-                    <h3 className="font-bold text-lg font-lora">My Progress</h3>
-                    <div className="grid grid-cols-2 gap-4 mt-2">
+                    <h3 className="font-bold text-lg font-lora mb-2">My Progress</h3>
+                    <div className="grid grid-cols-2 gap-4">
                         <div className="bg-blue-100 dark:bg-blue-900/50 p-4 rounded-lg text-center"><p className="text-3xl font-bold text-blue-600 dark:text-blue-300">{moodCount}</p><p className="text-sm font-medium text-blue-800 dark:text-blue-200">Moods Checked</p></div>
                         <div className="bg-purple-100 dark:bg-purple-900/50 p-4 rounded-lg text-center"><p className="text-3xl font-bold text-purple-600 dark:text-purple-300">{journalCount}</p><p className="text-sm font-medium text-purple-800 dark:text-purple-200">Journals Written</p></div>
                     </div>
                 </div>
-                <button onClick={() => signOut(auth)} className="w-full flex items-center justify-center gap-2 py-3 font-bold text-red-600 bg-red-100 dark:bg-red-900/50 rounded-lg hover:bg-red-200 dark:hover:bg-red-900/80 transition-colors"><LogOut size={20} /><span>Logout</span></button>
+
+                <div className="space-y-4 border-t dark:border-gray-700 pt-6">
+                     <h3 className="font-bold text-lg font-lora">Personal Info</h3>
+                    <ProfileDetail label="Username" value={user.username} />
+                    <ProfileDetail label="Name" value={user.name} />
+                    <ProfileDetail label="Email" value={user.email} />
+                    <ProfileDetail label="Age" value={user.age} />
+                    <ProfileDetail label="Date of Birth" value={user.dob} />
+                    <ProfileDetail label="Country" value={user.country} />
+                    <ProfileDetail label="City" value={user.city} />
+                </div>
+
+                {showEditProfile && <EditProfileModal user={user} onClose={() => setShowEditProfile(false)} />}
+                {showChangePassword && <ChangePasswordModal onClose={() => setShowChangePassword(false)} />}
+
+                <div className="flex flex-col space-y-4 pt-6 border-t dark:border-gray-700">
+                    <button onClick={() => setShowEditProfile(true)} className="w-full flex items-center justify-center gap-2 py-3 font-bold text-teal-600 bg-teal-100 dark:bg-teal-900/50 rounded-lg hover:bg-teal-200 dark:hover:bg-teal-900/80 transition-colors"><FileEdit size={20} /><span>Edit Profile</span></button>
+                    <button onClick={() => setShowChangePassword(true)} className="w-full flex items-center justify-center gap-2 py-3 font-bold text-teal-600 bg-teal-100 dark:bg-teal-900/50 rounded-lg hover:bg-teal-200 dark:hover:bg-teal-900/80 transition-colors"><KeyRound size={20} /><span>Change Password</span></button>
+                    <button onClick={() => signOut(auth)} className="w-full flex items-center justify-center gap-2 py-3 font-bold text-red-600 bg-red-100 dark:bg-red-900/50 rounded-lg hover:bg-red-200 dark:hover:bg-red-900/80 transition-colors"><LogOut size={20} /><span>Logout</span></button>
+                </div>
+            </div>
+        </div>
+    );
+};
+
+const EditProfileModal = ({ user, onClose }) => {
+    const [username, setUsername] = useState(user.username || '');
+    const [name, setName] = useState(user.name || '');
+    const [age, setAge] = useState(user.age || '');
+    const [dob, setDob] = useState(user.dob || '');
+    const [country, setCountry] = useState(user.country || '');
+    const [city, setCity] = useState(user.city || '');
+    const [error, setError] = useState('');
+    const [success, setSuccess] = useState('');
+    const [loading, setLoading] = useState(false);
+
+    const handleProfileUpdate = async (e) => {
+        e.preventDefault();
+        setError('');
+        setSuccess('');
+
+        if (!/^[a-zA-Z0-9_]{3,15}$/.test(username)) {
+            setError("Username must be 3-15 characters (letters, numbers, underscore).");
+            return;
+        }
+        setLoading(true);
+
+        const userDocRef = doc(db, `artifacts/${appId}/users`, user.uid);
+        const newUsernameDocRef = doc(db, `artifacts/${appId}/usernames`, username.toLowerCase());
+
+        try {
+            await runTransaction(db, async (transaction) => {
+                if (username.toLowerCase() !== user.username?.toLowerCase()) {
+                    const usernameDoc = await transaction.get(newUsernameDocRef);
+                    if (usernameDoc.exists()) {
+                        throw new Error("Username is already taken.");
+                    }
+                    transaction.set(newUsernameDocRef, { uid: user.uid });
+                }
+
+                transaction.update(userDocRef, { username, name, age, dob, country, city });
+            });
+            setSuccess("Profile updated successfully!");
+            setTimeout(() => onClose(), 2000);
+        } catch (err) {
+            setError(err.message.replace('Firebase: ', ''));
+        } finally {
+            setLoading(false);
+        }
+    };
+
+    return (
+        <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50 animate-fadeIn p-4">
+            <div className="bg-white dark:bg-gray-800 p-6 rounded-2xl shadow-lg max-w-sm w-full relative" onClick={e => e.stopPropagation()}>
+                <button onClick={onClose} className="absolute top-2 right-2 p-1 rounded-full hover:bg-gray-200 dark:hover:bg-gray-700"><X size={24} /></button>
+                <h3 className="text-xl font-bold text-center mb-4 font-lora">Edit Profile</h3>
+                <form onSubmit={handleProfileUpdate} className="space-y-3">
+                    <input type="text" placeholder="Username" value={username} onChange={e => setUsername(e.target.value)} className="w-full p-2 bg-gray-100 dark:bg-gray-700 rounded-md" required />
+                    <input type="text" placeholder="Name" value={name} onChange={e => setName(e.target.value)} className="w-full p-2 bg-gray-100 dark:bg-gray-700 rounded-md" required />
+                    <input type="number" placeholder="Age" value={age} onChange={e => setAge(e.target.value)} className="w-full p-2 bg-gray-100 dark:bg-gray-700 rounded-md" required />
+                    <input type="date" placeholder="Date of Birth" value={dob} onChange={e => setDob(e.target.value)} className="w-full p-2 bg-gray-100 dark:bg-gray-700 rounded-md" required />
+                    <input type="text" placeholder="Country" value={country} onChange={e => setCountry(e.target.value)} className="w-full p-2 bg-gray-100 dark:bg-gray-700 rounded-md" required />
+                    <input type="text" placeholder="City" value={city} onChange={e => setCity(e.target.value)} className="w-full p-2 bg-gray-100 dark:bg-gray-700 rounded-md" required />
+                    <button type="submit" disabled={loading} className="w-full px-4 py-2 mt-2 font-semibold text-white bg-teal-600 rounded-md hover:bg-teal-700 disabled:bg-teal-400">
+                        {loading ? 'Saving...' : 'Save Changes'}
+                    </button>
+                </form>
+                {error && <p className="text-red-500 text-xs text-center mt-2">{error}</p>}
+                {success && <p className="text-green-500 text-xs text-center mt-2">{success}</p>}
+            </div>
+        </div>
+    );
+};
+
+
+const ChangePasswordModal = ({ onClose }) => {
+    const [currentPassword, setCurrentPassword] = useState('');
+    const [newPassword, setNewPassword] = useState('');
+    const [confirmPassword, setConfirmPassword] =useState('');
+    const [error, setError] = useState('');
+    const [message, setMessage] = useState('');
+    const [loading, setLoading] = useState(false);
+
+    const handleSubmit = async (e) => {
+        e.preventDefault();
+        setError('');
+        setMessage('');
+
+        if (newPassword !== confirmPassword) {
+            setError("New passwords do not match.");
+            return;
+        }
+        if (newPassword.length < 6) {
+            setError("Password must be at least 6 characters long.");
+            return;
+        }
+        
+        setLoading(true);
+        const user = auth.currentUser;
+        const credential = EmailAuthProvider.credential(user.email, currentPassword);
+
+        try {
+            await reauthenticateWithCredential(user, credential);
+            await updatePassword(user, newPassword);
+            setMessage("Password updated successfully!");
+            setTimeout(() => {
+                onClose();
+            }, 2000);
+        } catch (err) {
+            setError(err.message.replace('Firebase: ', ''));
+        } finally {
+            setLoading(false);
+        }
+    };
+
+    return (
+        <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50 animate-fadeIn p-4">
+            <div className="bg-white dark:bg-gray-800 p-6 rounded-2xl shadow-lg max-w-sm w-full relative" onClick={e => e.stopPropagation()}>
+                <button onClick={onClose} className="absolute top-2 right-2 p-1 rounded-full hover:bg-gray-200 dark:hover:bg-gray-700"><X size={24} /></button>
+                <h3 className="text-xl font-bold text-center mb-4 font-lora">Change Password</h3>
+                <form onSubmit={handleSubmit} className="space-y-4">
+                    <input type="password" placeholder="Current Password" value={currentPassword} onChange={e => setCurrentPassword(e.target.value)} className="w-full p-3 bg-gray-100 dark:bg-gray-700 rounded-lg focus:outline-none focus:ring-2 focus:ring-teal-500" required />
+                    <input type="password" placeholder="New Password" value={newPassword} onChange={e => setNewPassword(e.target.value)} className="w-full p-3 bg-gray-100 dark:bg-gray-700 rounded-lg focus:outline-none focus:ring-2 focus:ring-teal-500" required />
+                    <input type="password" placeholder="Confirm New Password" value={confirmPassword} onChange={e => setConfirmPassword(e.target.value)} className="w-full p-3 bg-gray-100 dark:bg-gray-700 rounded-lg focus:outline-none focus:ring-2 focus:ring-teal-500" required />
+                    {error && <p className="text-red-500 text-sm text-center">{error}</p>}
+                    {message && <p className="text-green-500 text-sm text-center">{message}</p>}
+                    <button type="submit" disabled={loading} className="w-full py-3 mt-2 font-bold text-white bg-teal-600 rounded-lg hover:bg-teal-700 transition-colors disabled:bg-teal-400">
+                        {loading ? 'Updating...' : 'Update Password'}
+                    </button>
+                </form>
             </div>
         </div>
     );
 };
 
 const CrisisSupportPage = ({ setPage }) => (
-    <div className="animate-fadeIn">
+    <div className="animate-fadeIn py-8">
         <PageHeader title="Crisis Support" onBack={() => setPage('home')} />
         <div className="bg-white dark:bg-gray-800 p-6 rounded-2xl shadow-lg border-2 border-red-500">
             <h2 className="text-2xl font-bold text-red-600 dark:text-red-400 mb-4 font-lora">You are not alone. Help is available.</h2>
