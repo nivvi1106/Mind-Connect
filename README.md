@@ -1,7 +1,6 @@
 # Mind Connect - A Mental Wellness Web App 🧘‍♀️
 Mind Connect is a web-based application designed to provide immediate, accessible mental health support. It offers users a private and calming digital space with tools for distress relief, self-awareness, and emotional expression. The project was built to address the need for discreet and readily available mental wellness resources.
 
-(Note: You may want to replace this with an updated screenshot of the "Mind Connect" app)
 
 ## Core Features
 - **🔐 Secure Authentication:** Full user sign-up and login functionality powered by Firebase Authentication, ensuring user data is private and secure.
