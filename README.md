@@ -62,7 +62,7 @@ git clone https://github.com/nivvi1106/Mind-Connect.git
 
 2. Navigate to the project directory:
 ```bash
-cd your-repo-name
+cd Mind-Connect
 ```
 
 3. Install dependencies:
